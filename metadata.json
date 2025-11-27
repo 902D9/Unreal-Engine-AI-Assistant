@@ -1,0 +1,5 @@
+{
+  "name": "Unreal Engine AI Assistant",
+  "description": "A specialized AI coding companion for Unreal Engine 5 developers. Features C++ class generation, Blueprint logic explanation, and documentation search grounding.",
+  "requestFramePermissions": []
+}
