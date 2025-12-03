@@ -28,3 +28,11 @@ export interface ClassGenParams {
   parentClass: string;
   features: string;
 }
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  mode: AppMode;
+  messages: Message[];
+  lastModified: number;
+}

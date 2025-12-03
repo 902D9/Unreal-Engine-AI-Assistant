@@ -2,25 +2,53 @@ import React, { useState, useRef, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatMessage from './components/ChatMessage';
 import ClassGenerator from './components/ClassGenerator';
-import { AppMode, Message, Sender } from './types';
+import { AppMode, Message, Sender, ChatSession } from './types';
 import { streamChatResponse } from './services/geminiService';
 import { Send, Search, Sparkles, AlertCircle } from 'lucide-react';
 import { GenerateContentResponse } from '@google/genai';
 
+const LOCAL_STORAGE_KEY = 'ue_ai_sessions_v1';
+
+const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
+
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(AppMode.Chat);
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      id: 'welcome',
-      sender: Sender.AI,
-      text: "Welcome, Developer. I am your Unreal Engine AI Assistant. I can help you with C++ syntax, Blueprint logic, or searching the latest UE5 documentation. How can I assist you today?",
-      timestamp: Date.now()
-    }
-  ]);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [useSearch, setUseSearch] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Load from LocalStorage on mount
+  useEffect(() => {
+    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setSessions(parsed);
+        if (parsed.length > 0) {
+          setCurrentSessionId(parsed[0].id);
+          setMode(parsed[0].mode);
+        } else {
+          createNewSession(AppMode.Chat);
+        }
+      } catch (e) {
+        console.error("Failed to load sessions", e);
+        createNewSession(AppMode.Chat);
+      }
+    } else {
+      createNewSession(AppMode.Chat);
+    }
+  }, []);
+
+  // Save to LocalStorage whenever sessions change
+  useEffect(() => {
+    if (sessions.length > 0) {
+      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sessions));
+    }
+  }, [sessions]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -28,11 +56,67 @@ const App: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [sessions, currentSessionId]);
+
+  // Derived state: Current Messages
+  const currentSession = sessions.find(s => s.id === currentSessionId);
+  const messages = currentSession?.messages || [];
+
+  const createNewSession = (targetMode: AppMode = AppMode.Chat) => {
+    const newSession: ChatSession = {
+      id: generateId(),
+      title: 'New Chat',
+      mode: targetMode,
+      lastModified: Date.now(),
+      messages: [
+        {
+          id: 'welcome',
+          sender: Sender.AI,
+          text: targetMode === AppMode.BlueprintHelper 
+            ? "I am ready to assist with Blueprint Logic. Describe what you want to achieve."
+            : "Welcome, Developer. I am your Unreal Engine AI Assistant. How can I assist you today?",
+          timestamp: Date.now()
+        }
+      ]
+    };
+    
+    setSessions(prev => [newSession, ...prev]);
+    setCurrentSessionId(newSession.id);
+    setMode(targetMode);
+  };
+
+  const handleDeleteSession = (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const newSessions = sessions.filter(s => s.id !== sessionId);
+    setSessions(newSessions);
+    
+    // If we deleted the active session, switch to another one or create new
+    if (currentSessionId === sessionId) {
+      if (newSessions.length > 0) {
+        setCurrentSessionId(newSessions[0].id);
+        setMode(newSessions[0].mode);
+      } else {
+        createNewSession(AppMode.Chat);
+      }
+    }
+    
+    // If empty, clear local storage
+    if (newSessions.length === 0) {
+      localStorage.removeItem(LOCAL_STORAGE_KEY);
+    }
+  };
+
+  const handleSelectSession = (sessionId: string) => {
+    const session = sessions.find(s => s.id === sessionId);
+    if (session) {
+      setCurrentSessionId(sessionId);
+      setMode(session.mode);
+    }
+  };
 
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!inputText.trim() || isLoading) return;
+    if (!inputText.trim() || isLoading || !currentSessionId) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
@@ -41,7 +125,23 @@ const App: React.FC = () => {
       timestamp: Date.now()
     };
 
-    setMessages(prev => [...prev, userMessage]);
+    // Optimistically update UI with user message
+    setSessions(prev => prev.map(s => {
+      if (s.id === currentSessionId) {
+        // If this is the first user message (after welcome), update title
+        const isFirstUserMessage = s.messages.length === 1 && s.messages[0].sender === Sender.AI;
+        const newTitle = isFirstUserMessage ? inputText.slice(0, 30) + (inputText.length > 30 ? '...' : '') : s.title;
+
+        return {
+          ...s,
+          title: newTitle,
+          messages: [...s.messages, userMessage],
+          lastModified: Date.now()
+        };
+      }
+      return s;
+    }));
+
     setInputText('');
     setIsLoading(true);
 
@@ -49,6 +149,8 @@ const App: React.FC = () => {
       role: m.sender === Sender.User ? 'user' : 'model',
       parts: [{ text: m.text }]
     }));
+    // Add current message to history for the API call
+    history.push({ role: 'user', parts: [{ text: userMessage.text }] });
 
     try {
       const responseStream = await streamChatResponse(history, userMessage.text, useSearch);
@@ -57,20 +159,27 @@ const App: React.FC = () => {
       let accumulatedText = "";
       let groundingSources: any[] = [];
 
-      // Initial placeholder message
-      setMessages(prev => [...prev, {
-        id: aiMessageId,
-        sender: Sender.AI,
-        text: '',
-        timestamp: Date.now()
-      }]);
+      // Add placeholder AI message
+      setSessions(prev => prev.map(s => {
+        if (s.id === currentSessionId) {
+          return {
+            ...s,
+            messages: [...s.messages, {
+              id: aiMessageId,
+              sender: Sender.AI,
+              text: '',
+              timestamp: Date.now()
+            }]
+          };
+        }
+        return s;
+      }));
 
       for await (const chunk of responseStream) {
         const c = chunk as GenerateContentResponse;
         if (c.candidates && c.candidates.length > 0) {
            const candidate = c.candidates[0];
            
-           // Check for grounding
            if (candidate.groundingMetadata?.groundingChunks) {
              const chunks = candidate.groundingMetadata.groundingChunks;
              chunks.forEach(chunk => {
@@ -89,23 +198,37 @@ const App: React.FC = () => {
            }
         }
         
-        // Update the message in place
-        setMessages(prev => prev.map(msg => 
-          msg.id === aiMessageId 
-            ? { ...msg, text: accumulatedText, groundingSources: groundingSources.length > 0 ? groundingSources : undefined } 
-            : msg
-        ));
+        // Update the message in the specific session
+        setSessions(prev => prev.map(s => {
+          if (s.id === currentSessionId) {
+            const updatedMessages = s.messages.map(msg => 
+              msg.id === aiMessageId 
+                ? { ...msg, text: accumulatedText, groundingSources: groundingSources.length > 0 ? groundingSources : undefined } 
+                : msg
+            );
+            return { ...s, messages: updatedMessages };
+          }
+          return s;
+        }));
       }
 
     } catch (error) {
       console.error("Error sending message:", error);
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        sender: Sender.AI,
-        text: "I encountered an error processing your request. Please check your network connection or API key.",
-        isError: true,
-        timestamp: Date.now()
-      }]);
+      setSessions(prev => prev.map(s => {
+        if (s.id === currentSessionId) {
+          return {
+            ...s,
+            messages: [...s.messages, {
+              id: Date.now().toString(),
+              sender: Sender.AI,
+              text: "I encountered an error processing your request. Please check your network connection or API key.",
+              isError: true,
+              timestamp: Date.now()
+            }]
+          };
+        }
+        return s;
+      }));
     } finally {
       setIsLoading(false);
     }
@@ -121,7 +244,7 @@ const App: React.FC = () => {
   const renderContent = () => {
     switch (mode) {
       case AppMode.Chat:
-      case AppMode.BlueprintHelper: // Reuse chat for blueprint helper for now, maybe pre-prompt differently later
+      case AppMode.BlueprintHelper: 
         return (
           <div className="flex flex-col h-full relative">
             {/* Top Toolbar */}
@@ -132,6 +255,7 @@ const App: React.FC = () => {
                   </span>
                   <span>/</span>
                   <span className="text-xs">Context: {useSearch ? 'Online Docs' : 'Internal Knowledge'}</span>
+                  {currentSession && <span className="text-xs bg-ue-bg px-2 py-0.5 rounded border border-ue-border truncate max-w-[200px]">{currentSession.title}</span>}
                </div>
                
                <div className="flex items-center space-x-2">
@@ -213,7 +337,31 @@ const App: React.FC = () => {
 
   return (
     <div className="flex h-screen w-screen bg-ue-bg text-ue-text overflow-hidden font-sans">
-      <Sidebar currentMode={mode} setMode={setMode} />
+      <Sidebar 
+        currentMode={mode} 
+        setMode={(m) => {
+          // When switching mode via sidebar, if the current session doesn't match the new mode, 
+          // create a new one or find the latest one of that mode. 
+          // For simplicity, we just change the mode for now, or start fresh if user wants specific tool.
+          if (m === AppMode.ClassGenerator) {
+            setMode(m);
+          } else {
+             // Check if we have a session of this mode
+             const existing = sessions.find(s => s.mode === m);
+             if (existing) {
+               setCurrentSessionId(existing.id);
+             } else {
+               createNewSession(m);
+             }
+             setMode(m);
+          }
+        }}
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        onNewChat={() => createNewSession(mode === AppMode.ClassGenerator ? AppMode.Chat : mode)}
+        onSelectSession={handleSelectSession}
+        onDeleteSession={handleDeleteSession}
+      />
       <main className="flex-1 flex flex-col min-w-0">
         {renderContent()}
       </main>
