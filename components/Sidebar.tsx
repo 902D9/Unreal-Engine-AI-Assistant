@@ -112,9 +112,6 @@ const Sidebar: React.FC<SidebarProps> = ({
           <Settings size={20} />
           <span className="ml-3 hidden md:block text-xs">Settings</span>
         </button>
-         <div className="mt-2 px-2 hidden md:block">
-            <p className="text-[10px] text-gray-600">Engine Version: 5.4</p>
-         </div>
       </div>
     </div>
   );

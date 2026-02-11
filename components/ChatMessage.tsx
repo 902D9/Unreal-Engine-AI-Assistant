@@ -1,3 +1,4 @@
+
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Sender, Message } from '../types';
@@ -27,6 +28,17 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message }) => {
               ? 'bg-ue-panel border border-ue-border text-gray-200' 
               : 'bg-ue-accent text-white'
           }`}>
+            {/* Display Image if present */}
+            {message.image && (
+              <div className="mb-3 rounded overflow-hidden border border-white/10">
+                <img 
+                  src={`data:${message.image.mimeType};base64,${message.image.data}`} 
+                  alt="User uploaded content" 
+                  className="max-w-full h-auto max-h-[400px] object-contain"
+                />
+              </div>
+            )}
+
             {isAI ? (
                <div className="markdown-content">
                 <ReactMarkdown

@@ -1,10 +1,11 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import Sidebar from './components/Sidebar';
 import ChatMessage from './components/ChatMessage';
 import ClassGenerator from './components/ClassGenerator';
 import { AppMode, Message, Sender, ChatSession } from './types';
 import { streamChatResponse } from './services/geminiService';
-import { Send, Search, Sparkles, AlertCircle } from 'lucide-react';
+import { Send, Search, Sparkles, AlertCircle, Paperclip, X, Image as ImageIcon } from 'lucide-react';
 import { GenerateContentResponse } from '@google/genai';
 
 const LOCAL_STORAGE_KEY = 'ue_ai_sessions_v1';
@@ -19,6 +20,8 @@ const App: React.FC = () => {
   const [inputText, setInputText] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [useSearch, setUseSearch] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<{ data: string; mimeType: string; preview: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Load from LocalStorage on mount
@@ -90,7 +93,6 @@ const App: React.FC = () => {
     const newSessions = sessions.filter(s => s.id !== sessionId);
     setSessions(newSessions);
     
-    // If we deleted the active session, switch to another one or create new
     if (currentSessionId === sessionId) {
       if (newSessions.length > 0) {
         setCurrentSessionId(newSessions[0].id);
@@ -100,7 +102,6 @@ const App: React.FC = () => {
       }
     }
     
-    // If empty, clear local storage
     if (newSessions.length === 0) {
       localStorage.removeItem(LOCAL_STORAGE_KEY);
     }
@@ -114,23 +115,65 @@ const App: React.FC = () => {
     }
   };
 
+  const processFile = (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file.');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const base64String = (reader.result as string).split(',')[1];
+      setSelectedImage({
+        data: base64String,
+        mimeType: file.type,
+        preview: reader.result as string
+      });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processFile(file);
+    }
+  };
+
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const file = items[i].getAsFile();
+        if (file) {
+          processFile(file);
+          // Optional: prevent default if you only want to paste the image and not text
+          // e.preventDefault();
+        }
+      }
+    }
+  };
+
   const handleSendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
-    if (!inputText.trim() || isLoading || !currentSessionId) return;
+    if ((!inputText.trim() && !selectedImage) || isLoading || !currentSessionId) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       sender: Sender.User,
-      text: inputText,
-      timestamp: Date.now()
+      text: inputText || (selectedImage ? "[Image sent]" : ""),
+      timestamp: Date.now(),
+      image: selectedImage ? { data: selectedImage.data, mimeType: selectedImage.mimeType } : undefined
     };
 
-    // Optimistically update UI with user message
+    const currentImage = selectedImage;
+
     setSessions(prev => prev.map(s => {
       if (s.id === currentSessionId) {
-        // If this is the first user message (after welcome), update title
         const isFirstUserMessage = s.messages.length === 1 && s.messages[0].sender === Sender.AI;
-        const newTitle = isFirstUserMessage ? inputText.slice(0, 30) + (inputText.length > 30 ? '...' : '') : s.title;
+        const newTitle = isFirstUserMessage 
+          ? (inputText.slice(0, 30) || "Image Analysis") + (inputText.length > 30 ? '...' : '') 
+          : s.title;
 
         return {
           ...s,
@@ -143,23 +186,26 @@ const App: React.FC = () => {
     }));
 
     setInputText('');
+    setSelectedImage(null);
     setIsLoading(true);
 
     const history = messages.map(m => ({
       role: m.sender === Sender.User ? 'user' : 'model',
       parts: [{ text: m.text }]
     }));
-    // Add current message to history for the API call
-    history.push({ role: 'user', parts: [{ text: userMessage.text }] });
 
     try {
-      const responseStream = await streamChatResponse(history, userMessage.text, useSearch);
+      const responseStream = await streamChatResponse(
+        history, 
+        userMessage.text, 
+        useSearch, 
+        currentImage ? { data: currentImage.data, mimeType: currentImage.mimeType } : undefined
+      );
       
       const aiMessageId = (Date.now() + 1).toString();
       let accumulatedText = "";
       let groundingSources: any[] = [];
 
-      // Add placeholder AI message
       setSessions(prev => prev.map(s => {
         if (s.id === currentSessionId) {
           return {
@@ -198,7 +244,6 @@ const App: React.FC = () => {
            }
         }
         
-        // Update the message in the specific session
         setSessions(prev => prev.map(s => {
           if (s.id === currentSessionId) {
             const updatedMessages = s.messages.map(msg => 
@@ -255,7 +300,7 @@ const App: React.FC = () => {
                   </span>
                   <span>/</span>
                   <span className="text-xs">Context: {useSearch ? 'Online Docs' : 'Internal Knowledge'}</span>
-                  {currentSession && <span className="text-xs bg-ue-bg px-2 py-0.5 rounded border border-ue-border truncate max-w-[200px]">{currentSession.title}</span>}
+                  {currentSession && <span className="text-xs bg-ue-bg px-2 py-0.5 rounded border border-ue-border truncate max-w-[200px] ml-2">{currentSession.title}</span>}
                </div>
                
                <div className="flex items-center space-x-2">
@@ -292,23 +337,62 @@ const App: React.FC = () => {
             <div className="p-4 bg-ue-panel border-t border-ue-border">
               <div className="max-w-4xl mx-auto">
                 <div className="relative">
+                  {/* Image Preview */}
+                  {selectedImage && (
+                    <div className="absolute bottom-full left-0 mb-2 p-2 bg-ue-panel border border-ue-border rounded-lg shadow-xl flex items-center gap-2 group">
+                      <div className="relative h-16 w-16 rounded overflow-hidden border border-white/10">
+                        <img src={selectedImage.preview} alt="Upload preview" className="h-full w-full object-cover" />
+                      </div>
+                      <button 
+                        onClick={() => setSelectedImage(null)}
+                        className="p-1 rounded-full bg-red-500/80 text-white hover:bg-red-500 transition-colors"
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  )}
+
                   <textarea
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    placeholder={mode === AppMode.BlueprintHelper ? "Describe the Blueprint logic you need..." : "Ask about C++, Blueprints, or UE5 API..."}
-                    className="w-full bg-[#0f0f0f] text-white border border-ue-border rounded-lg pl-4 pr-12 py-3 focus:outline-none focus:border-ue-accent transition-colors resize-none h-24"
+                    onPaste={handlePaste}
+                    placeholder={mode === AppMode.BlueprintHelper ? "Describe the Blueprint logic or paste/attach a screenshot..." : "Ask about C++, Blueprints, or paste an error screenshot..."}
+                    className="w-full bg-[#0f0f0f] text-white border border-ue-border rounded-lg pl-12 pr-12 py-3 focus:outline-none focus:border-ue-accent transition-colors resize-none h-24"
                   />
+                  
+                  {/* Upload Button */}
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="absolute left-3 bottom-3 p-2 text-gray-400 hover:text-ue-accent transition-colors"
+                    title="Upload Image"
+                  >
+                    <Paperclip size={20} />
+                  </button>
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    onChange={handleFileChange} 
+                    accept="image/*" 
+                    className="hidden" 
+                  />
+
+                  {/* Send Button */}
                   <button
                     onClick={() => handleSendMessage()}
-                    disabled={!inputText.trim() || isLoading}
+                    disabled={(!inputText.trim() && !selectedImage) || isLoading}
                     className="absolute right-3 bottom-3 p-2 text-gray-400 hover:text-ue-accent disabled:opacity-50 disabled:hover:text-gray-400 transition-colors"
                   >
                     <Send size={20} />
                   </button>
                 </div>
                 <div className="text-center mt-2 flex justify-between px-1">
-                   <span className="text-[10px] text-gray-600">SHIFT+ENTER for new line</span>
+                   <div className="flex gap-4">
+                     <span className="text-[10px] text-gray-600">SHIFT+ENTER for new line</span>
+                     <span className="text-[10px] text-gray-600 flex items-center gap-1">
+                       <ImageIcon size={10} /> Supports pasting images
+                     </span>
+                   </div>
                    <span className="text-[10px] text-gray-600">AI can make mistakes. Verify code.</span>
                 </div>
               </div>
@@ -322,7 +406,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Check for API Key on mount
   if (!process.env.API_KEY) {
     return (
       <div className="h-screen w-screen bg-ue-bg flex items-center justify-center text-white">
@@ -340,13 +423,9 @@ const App: React.FC = () => {
       <Sidebar 
         currentMode={mode} 
         setMode={(m) => {
-          // When switching mode via sidebar, if the current session doesn't match the new mode, 
-          // create a new one or find the latest one of that mode. 
-          // For simplicity, we just change the mode for now, or start fresh if user wants specific tool.
           if (m === AppMode.ClassGenerator) {
             setMode(m);
           } else {
-             // Check if we have a session of this mode
              const existing = sessions.find(s => s.mode === m);
              if (existing) {
                setCurrentSessionId(existing.id);

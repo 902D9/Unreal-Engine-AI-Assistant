@@ -1,3 +1,4 @@
+
 export enum Sender {
   User = 'User',
   AI = 'AI'
@@ -10,6 +11,10 @@ export interface Message {
   timestamp: number;
   isError?: boolean;
   groundingSources?: GroundingSource[];
+  image?: {
+    data: string;
+    mimeType: string;
+  };
 }
 
 export interface GroundingSource {
